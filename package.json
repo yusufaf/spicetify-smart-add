@@ -1,0 +1,19 @@
+{
+  "name": "spicetify-smart-add",
+  "version": "0.0.0",
+  "description": "Suggests your mapped playlists first in Spotify's Add to playlist menu",
+  "main": "smart-add.js",
+  "scripts": {
+    "test": "node --check smart-add.js",
+    "prepare": "husky"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "packageManager": "pnpm@10.24.0",
+  "devDependencies": {
+    "@commitlint/cli": "^20.5.3",
+    "@commitlint/config-conventional": "^20.5.3",
+    "husky": "^9.1.7"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "Smart Add",
+  "description": "Suggests your mapped playlists first in Spotify's Add to playlist menu",
+  "main": "smart-add.js",
+  "readme": "README.md",
+  "authors": [
+    {
+      "name": "yusufaf",
+      "url": "https://github.com/yusufaf"
+    }
+  ],
+  "tags": ["playlists", "organization", "add to playlist"]
+}
