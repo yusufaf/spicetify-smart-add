@@ -14,6 +14,7 @@ const SA_DATA_KEY = 'smart-add-data';
 const SA_CONFIG_KEY = 'smart-add-config';
 const SA_DATA_BACKUP_KEY = 'smart-add-data-backup';
 const SA_DATA_VERSION = 1;
+const SA_MAX_GROUPS = 3;
 const SA_PLAYLIST_CACHE_MS = 30_000;
 const SA_SOURCE_CACHE_SIZE = 200;
 const SA_DEFAULT_CONFIG = { enabled: true, maxPerGroup: 5, showGroupHeaders: true };
@@ -238,6 +239,89 @@ function saSourcesFromPlayerItem(item) {
 //#endregion
 
 //#region Mappings Store
+/**
+ * @typedef {{kind: 'artist'|'show', name: string, playlists: string[], updatedAt: number}} Mapping
+ */
+
+/**
+ * @param {string} sourceUri
+ * @returns {Mapping|undefined}
+ */
+function saGetMapping(sourceUri) {
+  return saData.mappings[sourceUri];
+}
+
+/**
+ * Stores the playlists for a source. An empty list removes the mapping.
+ * @param {Source} source
+ * @param {string[]} playlistUris
+ */
+function saSetMapping(source, playlistUris) {
+  if (!playlistUris.length) {
+    saRemoveMapping(source.uri);
+    return;
+  }
+  saData.mappings[source.uri] = { kind: source.kind, name: source.name, playlists: [...playlistUris], updatedAt: Date.now() };
+  saSaveData();
+}
+
+/**
+ * @param {string} sourceUri
+ */
+function saRemoveMapping(sourceUri) {
+  delete saData.mappings[sourceUri];
+  saSaveData();
+}
+
+/**
+ * Drops playlists that are no longer in the user's library, then mappings left empty.
+ * Does nothing when the library couldn't be read, so a failed fetch never wipes mappings.
+ * @param {Object<string, Mapping>} mappings
+ * @param {Set<string>} validUris
+ * @returns {{mappings: Object<string, Mapping>, removed: number}}
+ */
+function saPruneMappings(mappings, validUris) {
+  if (validUris.size === 0) return { mappings, removed: 0 };
+  const out = {};
+  let removed = 0;
+  for (const [uri, m] of Object.entries(mappings)) {
+    const playlists = m.playlists.filter((p) => validUris.has(p));
+    removed += m.playlists.length - playlists.length;
+    if (playlists.length) out[uri] = playlists.length === m.playlists.length ? m : { ...m, playlists };
+  }
+  return { mappings: out, removed };
+}
+
+/**
+ * Builds the Suggested groups: one per source with a mapping, in source order.
+ * A playlist mapped to several sources appears once, under the earliest source.
+ * Empty groups are dropped and at most SA_MAX_GROUPS groups are returned.
+ * maxPerGroup caps unsaved rows only, so a saved row never hides a playlist the track could still go in.
+ * @param {Source[]} sources
+ * @param {Object<string, Mapping>} mappings
+ * @param {Set<string>} savedInSet playlist URIs that already hold the track
+ * @param {number} maxPerGroup
+ * @returns {Array<{source: Source, rows: Array<{playlistUri: string, saved: boolean}>}>}
+ */
+function buildSuggestionGroups(sources, mappings, savedInSet, maxPerGroup) {
+  const shown = new Set();
+  const groups = [];
+  for (const source of sources) {
+    if (groups.length >= SA_MAX_GROUPS) break;
+    const rows = [];
+    let unsaved = 0;
+    for (const playlistUri of mappings[source.uri]?.playlists || []) {
+      if (shown.has(playlistUri)) continue;
+      const saved = savedInSet.has(playlistUri);
+      if (!saved && unsaved >= maxPerGroup) continue;
+      if (!saved) unsaved += 1;
+      shown.add(playlistUri);
+      rows.push({ playlistUri, saved });
+    }
+    if (rows.length) groups.push({ source, rows });
+  }
+  return groups;
+}
 //#endregion
 
 //#region Trigger Capture
@@ -285,6 +369,8 @@ if (typeof module !== 'undefined' && module.exports) {
     saFlattenRootlist,
     saTrackArtists,
     saCreateLru,
+    saPruneMappings,
+    buildSuggestionGroups,
   };
 } else {
   saMain();
