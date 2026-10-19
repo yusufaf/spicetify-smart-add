@@ -44,21 +44,35 @@ function saDefaultData() {
 }
 
 /**
- * Parses the stored mappings data.
+ * Whether a stored mapping entry has the shape the extension relies on.
+ * @param {any} m
+ * @returns {boolean}
+ */
+function saIsValidMapping(m) {
+  return Boolean(m) && typeof m === 'object'
+    && (m.kind === 'artist' || m.kind === 'show')
+    && typeof m.name === 'string'
+    && Array.isArray(m.playlists) && m.playlists.every((p) => typeof p === 'string');
+}
+
+/**
+ * Parses the stored mappings data, dropping entries with the wrong shape.
  * @param {string|null} raw
- * @returns {{data: {version: number, mappings: Object}, corrupt: boolean}}
+ * @returns {{data: {version: number, mappings: Object}, corrupt: boolean, dropped: number}}
  */
 function saParseData(raw) {
-  if (raw == null) return { data: saDefaultData(), corrupt: false };
+  if (raw == null) return { data: saDefaultData(), corrupt: false, dropped: 0 };
   try {
     const parsed = JSON.parse(raw);
     const mappings = parsed?.mappings;
     if (!mappings || typeof mappings !== 'object' || Array.isArray(mappings)) {
-      return { data: saDefaultData(), corrupt: true };
+      return { data: saDefaultData(), corrupt: true, dropped: 0 };
     }
-    return { data: { version: SA_DATA_VERSION, mappings }, corrupt: false };
+    const kept = Object.fromEntries(Object.entries(mappings).filter(([, m]) => saIsValidMapping(m)));
+    const dropped = Object.keys(mappings).length - Object.keys(kept).length;
+    return { data: { version: SA_DATA_VERSION, mappings: kept }, corrupt: false, dropped };
   } catch {
-    return { data: saDefaultData(), corrupt: true };
+    return { data: saDefaultData(), corrupt: true, dropped: 0 };
   }
 }
 
@@ -80,10 +94,10 @@ function saParseConfig(raw) {
  */
 function saLoad() {
   const raw = Spicetify.LocalStorage.get(SA_DATA_KEY);
-  const { data, corrupt } = saParseData(raw);
-  if (corrupt) {
+  const { data, corrupt, dropped } = saParseData(raw);
+  if (corrupt || dropped) {
     Spicetify.LocalStorage.set(SA_DATA_BACKUP_KEY, raw);
-    console.warn(`${SA_LOG} Stored data was unreadable; reset it and kept a copy in ${SA_DATA_BACKUP_KEY}`);
+    console.warn(`${SA_LOG} Some stored mappings were unreadable and were skipped; the original is kept in ${SA_DATA_BACKUP_KEY}`);
   }
   saData = data;
   saConfig = saParseConfig(Spicetify.LocalStorage.get(SA_CONFIG_KEY));
@@ -124,6 +138,28 @@ function saFlattenRootlist(node) {
 }
 
 /**
+ * URIs of every playlist in the library, for deciding which mapped playlists were deleted.
+ * Not limited to canAdd: an unloaded playlist reads as canAdd false. Returns null while any
+ * playlist is still loading, so pruning waits rather than deleting it.
+ * @param {Object|null} node RootlistAPI.getContents() result
+ * @returns {Set<string>|null}
+ */
+function saPrunableUris(node) {
+  const uris = new Set();
+  let loading = false;
+  const walk = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (n.type === 'playlist' && n.uri) {
+      if (n.isLoaded === false) loading = true;
+      uris.add(n.uri);
+    }
+    for (const child of n.items || n.rows || n.children || []) walk(child);
+  };
+  walk(node);
+  return loading ? null : uris;
+}
+
+/**
  * Returns the playlists the user can add to. Cached for 30s, concurrent calls share one request.
  * @param {{force?: boolean}} [opts]
  * @returns {Promise<Array<{uri: string, name: string, image: string}>>}
@@ -161,10 +197,12 @@ function saWatchRootlist() {
  */
 async function saPruneStored() {
   try {
-    const playlists = saFlattenRootlist(await Spicetify.Platform.RootlistAPI.getContents());
-    saPlaylistCache = playlists;
+    const root = await Spicetify.Platform.RootlistAPI.getContents();
+    saPlaylistCache = saFlattenRootlist(root);
     saPlaylistCacheAt = Date.now();
-    const { mappings, removed } = saPruneMappings(saData.mappings, new Set(playlists.map((p) => p.uri)));
+    const valid = saPrunableUris(root);
+    if (!valid) return;
+    const { mappings, removed } = saPruneMappings(saData.mappings, valid);
     if (!removed) return;
     saData.mappings = mappings;
     saSaveData();
@@ -390,37 +428,46 @@ function saRowUri(row) {
 }
 
 /**
+ * The track or episode a save/add button belongs to, or null if it can't be told for sure.
+ * @param {Element} button button[aria-checked]
+ * @param {Object|undefined} playerItem Spicetify.Player.data.item
+ * @returns {string|null}
+ */
+function saClickedItemUri(button, playerItem) {
+  const row = button.closest('[role=row]');
+  // Episode rows keep the URI closer to the button than to the row element.
+  if (row) return saRowUri(button) || saRowUri(row);
+  if (button.closest('[data-testid=now-playing-widget], #Desktop_PanelContainer_Id')) {
+    return saRowUri(button) || playerItem?.uri || null;
+  }
+  return null;
+}
+
+/**
  * Records what a click on a row or now-playing save/add button refers to.
  * The same button saves to Liked Songs or opens the Add to playlist modal, so every click is
  * recorded and the modal injector decides whether a capture is fresh enough to use.
+ * Any other click outside the modal clears the capture, so a modal opened from somewhere we
+ * don't recognize never gets an earlier item's suggestions.
  * @param {MouseEvent} event
  */
 function saOnClickCapture(event) {
   try {
     const target = /** @type {Element} */ (event.target);
-    if (target.closest?.('#context-menu')) {
+    if (target.closest?.('form')) return;
+    const button = target.closest?.('button[aria-checked]');
+    const item = Spicetify.Player.data?.item;
+    const uri = button && !button.closest('[role=menu], #context-menu') ? saClickedItemUri(button, item) : null;
+    if (!uri) {
       saCapture = null;
       return;
     }
-    const button = target.closest?.('button[aria-checked]');
-    if (!button || button.closest('form, [role=menu]')) return;
-    const row = button.closest('[role=row]');
-    if (row) {
-      // Episode rows keep the URI closer to the button than to the row element.
-      const uri = saRowUri(button) || saRowUri(row);
-      if (uri) saCapture = { uris: [uri], at: Date.now(), sources: saResolveSources([uri]), used: false };
-      saGetPlaylists();
-      return;
-    }
-    if (button.closest('[data-testid=now-playing-widget], #Desktop_PanelContainer_Id')) {
-      const item = Spicetify.Player.data?.item;
-      if (!item?.uri) return;
-      const direct = saSourcesFromPlayerItem(item);
-      const sources = direct.length ? Promise.resolve(direct) : saResolveSources([item.uri]);
-      saCapture = { uris: [item.uri], at: Date.now(), sources, used: false };
-      saGetPlaylists();
-    }
+    const direct = uri === item?.uri ? saSourcesFromPlayerItem(item) : [];
+    const sources = direct.length ? Promise.resolve(direct) : saResolveSources([uri]);
+    saCapture = { uris: [uri], at: Date.now(), sources, used: false };
+    saGetPlaylists();
   } catch (err) {
+    saCapture = null;
     console.error(`${SA_LOG} Click capture failed`, err);
   }
 }
@@ -771,6 +818,16 @@ function saNextPlaylists(previous, checked, listOrder) {
 }
 
 /**
+ * Escapes text for HTML. PopupModal titles are rendered with innerHTML, and artist/show
+ * names come from Spotify, podcast publishers, or imported files.
+ * @param {string} text
+ * @returns {string}
+ */
+function saEscapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+/**
  * Opens the editor for one source's playlists.
  * @param {Source} source
  */
@@ -845,7 +902,7 @@ async function saOpenMappingEditor(source) {
     footer.append(save);
 
     root.append(hint, filter, list, footer);
-    Spicetify.PopupModal.display({ title: `Playlists for ${source.name}`, content: root, isLarge: true });
+    Spicetify.PopupModal.display({ title: `Playlists for ${saEscapeHtml(source.name)}`, content: root, isLarge: true });
     filter.focus();
   } catch (err) {
     console.error(`${SA_LOG} Couldn't open the mapping editor`, err);
@@ -964,8 +1021,8 @@ function saParseImport(text) {
     parsed = null;
   }
   if (parsed?.app !== 'smart-add') throw new Error('Not a Smart Add export');
-  const { data, corrupt } = saParseData(JSON.stringify(parsed.data ?? null));
-  if (corrupt || !parsed.data) throw new Error('Not a Smart Add export');
+  const { data, corrupt, dropped } = saParseData(JSON.stringify(parsed.data ?? null));
+  if (corrupt || dropped || !parsed.data) throw new Error('Not a Smart Add export');
   return { data, config: saParseConfig(JSON.stringify(parsed.config ?? null)) };
 }
 
@@ -1077,7 +1134,8 @@ function saOpenSettings() {
     document.body.append(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
+    // Revoking right away can cancel the download before it starts.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     Spicetify.showNotification('Exported Smart Add mappings');
   });
 
@@ -1308,14 +1366,17 @@ if (typeof module !== 'undefined' && module.exports) {
     saFlattenRootlist,
     saTrackArtists,
     saCreateLru,
+    saPrunableUris,
     saPruneMappings,
     buildSuggestionGroups,
     saIsFresh,
     saRowUri,
+    saClickedItemUri,
     saPlaylistUriFromLabelledBy,
     saNativeRowUri,
     saFilterPlaylists,
     saNextPlaylists,
+    saEscapeHtml,
     saExportText,
     saParseImport,
   };

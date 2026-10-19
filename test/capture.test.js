@@ -34,3 +34,29 @@ test("ignores non-track URIs and rows without React data", () => {
   assert.equal(saRowUri({}), null);
   assert.equal(saRowUri(null), null);
 });
+
+// A fake element: `inside` lists the selectors its ancestors match; props become its React fiber chain.
+const fakeEl = ({ inside = [], props = [] } = {}) => {
+  const el = fakeRow(props);
+  el.closest = (selector) => (selector.split(",").some((s) => inside.includes(s.trim())) ? el : null);
+  return el;
+};
+const PLAYING = { uri: "spotify:track:playing" };
+
+test("a row button gives the row's track", () => {
+  const { saClickedItemUri } = require("../smart-add.js");
+  assert.equal(saClickedItemUri(fakeEl({ inside: ["[role=row]"], props: [{ uri: "spotify:track:row" }] }), PLAYING), "spotify:track:row");
+});
+
+test("a now-playing button gives the playing track unless its own props name another track", () => {
+  const { saClickedItemUri } = require("../smart-add.js");
+  assert.equal(saClickedItemUri(fakeEl({ inside: ["[data-testid=now-playing-widget]"] }), PLAYING), "spotify:track:playing");
+  assert.equal(saClickedItemUri(fakeEl({ inside: ["#Desktop_PanelContainer_Id"], props: [{ uri: "spotify:track:next" }] }), PLAYING), "spotify:track:next");
+});
+
+test("buttons anywhere else, or rows without a readable URI, give nothing", () => {
+  const { saClickedItemUri } = require("../smart-add.js");
+  assert.equal(saClickedItemUri(fakeEl(), PLAYING), null);
+  assert.equal(saClickedItemUri(fakeEl({ inside: ["[role=row]"] }), PLAYING), null);
+  assert.equal(saClickedItemUri(fakeEl({ inside: ["#Desktop_PanelContainer_Id"] }), undefined), null);
+});

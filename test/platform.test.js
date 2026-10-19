@@ -61,3 +61,19 @@ test("evicts the least recently used entry", () => {
   assert.equal(lru.get("a"), 1);
   assert.equal(lru.get("c"), 3);
 });
+
+test("pruning counts every playlist in the library, including ones that can't be added to", () => {
+  const { saPrunableUris } = require("../smart-add.js");
+  assert.deepEqual([...saPrunableUris(ROOTLIST)].sort(), [
+    "spotify:playlist:followed",
+    "spotify:playlist:jazz",
+    "spotify:playlist:rap",
+    "spotify:playlist:rnb",
+  ]);
+});
+
+test("pruning is skipped while any playlist is still loading, since it reads as canAdd: false", () => {
+  const { saPrunableUris } = require("../smart-add.js");
+  const loading = { ...ROOTLIST, items: [...ROOTLIST.items, { type: "playlist", uri: "spotify:playlist:mine", name: "", canAdd: false, isLoaded: false }] };
+  assert.equal(saPrunableUris(loading), null);
+});

@@ -27,3 +27,8 @@ test("drops playlists that were unchecked", () => {
   const previous = ["spotify:playlist:jazz", "spotify:playlist:rap"];
   assert.deepEqual(saNextPlaylists(previous, new Set(["spotify:playlist:rap"]), PLAYLISTS.map((p) => p.uri)), ["spotify:playlist:rap"]);
 });
+
+test("escapes names before they go into a modal title, which Spicetify renders as HTML", () => {
+  const { saEscapeHtml } = require("../smart-add.js");
+  assert.equal(saEscapeHtml(`<img src=x onerror="alert(1)"> & 'co'`), "&lt;img src=x onerror=&quot;alert(1)&quot;&gt; &amp; &#39;co&#39;");
+});

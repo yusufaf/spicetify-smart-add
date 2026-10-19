@@ -5,13 +5,13 @@ const { saParseData, saParseConfig } = require("../smart-add.js");
 const DEFAULT_DATA = { version: 1, mappings: {} };
 
 test("starts empty when nothing is stored", () => {
-  assert.deepEqual(saParseData(null), { data: DEFAULT_DATA, corrupt: false });
+  assert.deepEqual(saParseData(null), { data: DEFAULT_DATA, corrupt: false, dropped: 0 });
 });
 
 test("flags unparseable or wrongly shaped data as corrupt and falls back to defaults", () => {
-  assert.deepEqual(saParseData("{not json"), { data: DEFAULT_DATA, corrupt: true });
-  assert.deepEqual(saParseData('{"version":1,"mappings":[]}'), { data: DEFAULT_DATA, corrupt: true });
-  assert.deepEqual(saParseData("null"), { data: DEFAULT_DATA, corrupt: true });
+  assert.deepEqual(saParseData("{not json"), { data: DEFAULT_DATA, corrupt: true, dropped: 0 });
+  assert.deepEqual(saParseData('{"version":1,"mappings":[]}'), { data: DEFAULT_DATA, corrupt: true, dropped: 0 });
+  assert.deepEqual(saParseData("null"), { data: DEFAULT_DATA, corrupt: true, dropped: 0 });
 });
 
 test("keeps a valid stored mapping unchanged", () => {
@@ -26,11 +26,26 @@ test("keeps a valid stored mapping unchanged", () => {
       },
     },
   };
-  assert.deepEqual(saParseData(JSON.stringify(data)), { data, corrupt: false });
+  assert.deepEqual(saParseData(JSON.stringify(data)), { data, corrupt: false, dropped: 0 });
 });
 
 test("merges stored config over defaults and ignores garbage", () => {
   assert.deepEqual(saParseConfig('{"maxPerGroup":3}'), { enabled: true, maxPerGroup: 3, showGroupHeaders: true });
   assert.deepEqual(saParseConfig("x"), { enabled: true, maxPerGroup: 5, showGroupHeaders: true });
   assert.deepEqual(saParseConfig(null), { enabled: true, maxPerGroup: 5, showGroupHeaders: true });
+});
+
+test("drops mapping entries with the wrong shape and counts them", () => {
+  const good = { kind: "show", name: "Lex Fridman Podcast", playlists: ["spotify:playlist:a"], updatedAt: 1 };
+  const raw = JSON.stringify({
+    version: 1,
+    mappings: {
+      "spotify:show:good": good,
+      "spotify:artist:empty": {},
+      "spotify:artist:badlist": { kind: "artist", name: "X", playlists: "spotify:playlist:a", updatedAt: 1 },
+      "spotify:artist:badkind": { kind: "album", name: "X", playlists: [], updatedAt: 1 },
+      "spotify:artist:badname": { kind: "artist", name: 5, playlists: ["spotify:playlist:a"], updatedAt: 1 },
+    },
+  });
+  assert.deepEqual(saParseData(raw), { data: { version: 1, mappings: { "spotify:show:good": good } }, corrupt: false, dropped: 4 });
 });

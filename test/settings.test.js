@@ -24,3 +24,8 @@ test("fills in config defaults for an export without config", () => {
   const text = JSON.stringify({ app: "smart-add", data: DATA });
   assert.deepEqual(saParseImport(text).config, { enabled: true, maxPerGroup: 5, showGroupHeaders: true });
 });
+
+test("rejects an export with a malformed mapping instead of importing part of it", () => {
+  const text = JSON.stringify({ app: "smart-add", data: { version: 1, mappings: { "spotify:artist:x": {} } } });
+  assert.throws(() => saParseImport(text), { message: "Not a Smart Add export" });
+});
