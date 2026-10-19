@@ -14,12 +14,18 @@ const SA_DATA_KEY = 'smart-add-data';
 const SA_CONFIG_KEY = 'smart-add-config';
 const SA_DATA_BACKUP_KEY = 'smart-add-data-backup';
 const SA_DATA_VERSION = 1;
+const SA_PLAYLIST_CACHE_MS = 30_000;
+const SA_SOURCE_CACHE_SIZE = 200;
 const SA_DEFAULT_CONFIG = { enabled: true, maxPerGroup: 5, showGroupHeaders: true };
 //#endregion
 
 //#region State
 let saData = { version: SA_DATA_VERSION, mappings: {} };
 let saConfig = { ...SA_DEFAULT_CONFIG };
+let saPlaylistCache = null;
+let saPlaylistCacheAt = 0;
+let saPlaylistInflight = null;
+const saSourceCache = saCreateLru(SA_SOURCE_CACHE_SIZE);
 //#endregion
 
 //#region Storage
@@ -89,6 +95,146 @@ function saSaveConfig() {
 //#endregion
 
 //#region Platform Helpers
+/**
+ * @typedef {{uri: string, name: string, kind: 'artist'|'show'}} Source
+ */
+
+/**
+ * Flattens the rootlist tree into the playlists the user can add to.
+ * @param {Object|null} node RootlistAPI.getContents() result
+ * @returns {Array<{uri: string, name: string}>}
+ */
+function saFlattenRootlist(node) {
+  const out = [];
+  const walk = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (n.type === 'playlist' && n.canAdd === true && n.uri) {
+      out.push({ uri: n.uri, name: n.name || '' });
+    }
+    for (const child of n.items || n.rows || n.children || []) walk(child);
+  };
+  walk(node);
+  return out;
+}
+
+/**
+ * Returns the playlists the user can add to. Cached for 30s, concurrent calls share one request.
+ * @param {{force?: boolean}} [opts]
+ * @returns {Promise<Array<{uri: string, name: string}>>}
+ */
+async function saGetPlaylists(opts = {}) {
+  if (!opts.force && saPlaylistCache && Date.now() - saPlaylistCacheAt < SA_PLAYLIST_CACHE_MS) {
+    return saPlaylistCache;
+  }
+  if (saPlaylistInflight) return saPlaylistInflight;
+  saPlaylistInflight = (async () => {
+    try {
+      const root = await Spicetify.Platform.RootlistAPI.getContents();
+      saPlaylistCache = saFlattenRootlist(root);
+      saPlaylistCacheAt = Date.now();
+    } catch (err) {
+      console.error(`${SA_LOG} Failed to read playlists`, err);
+    } finally {
+      saPlaylistInflight = null;
+    }
+    return saPlaylistCache || [];
+  })();
+  return saPlaylistInflight;
+}
+
+/**
+ * Extracts credited artists from a GraphQL trackUnion, primary artist first.
+ * @param {Object|undefined} trackUnion
+ * @returns {Source[]}
+ */
+function saTrackArtists(trackUnion) {
+  const items = [...(trackUnion?.firstArtist?.items || []), ...(trackUnion?.otherArtists?.items || [])];
+  return saDedupeSources(items
+    .filter((a) => a?.uri)
+    .map((a) => ({ uri: a.uri, name: a.profile?.name || '', kind: 'artist' })));
+}
+
+/**
+ * Removes repeated sources, keeping the first occurrence.
+ * @param {Source[]} sources
+ * @returns {Source[]}
+ */
+function saDedupeSources(sources) {
+  const seen = new Set();
+  return sources.filter((s) => !seen.has(s.uri) && seen.add(s.uri));
+}
+
+/**
+ * Creates a small least-recently-used cache.
+ * @param {number} limit
+ * @returns {{get: (key: string) => any, set: (key: string, value: any) => void}}
+ */
+function saCreateLru(limit) {
+  const map = new Map();
+  return {
+    get(key) {
+      if (!map.has(key)) return undefined;
+      const value = map.get(key);
+      map.delete(key);
+      map.set(key, value);
+      return value;
+    },
+    set(key, value) {
+      map.delete(key);
+      map.set(key, value);
+      if (map.size > limit) map.delete(map.keys().next().value);
+    },
+  };
+}
+
+/**
+ * Looks up the sources (artists or show) for one track or episode URI.
+ * @param {string} uri
+ * @returns {Promise<Source[]>}
+ */
+async function saFetchSources(uri) {
+  const { Request, Definitions } = Spicetify.GraphQL;
+  if (Spicetify.URI.isEpisode(uri)) {
+    const res = await Request(Definitions.queryNpvEpisode, { uri });
+    const show = res?.data?.episodeUnionV2?.podcastV2?.data;
+    return show?.uri ? [{ uri: show.uri, name: show.name || '', kind: 'show' }] : [];
+  }
+  const res = await Request(Definitions.getTrack, { uri, locale: Spicetify.Locale?.getLocale?.() || 'en' });
+  return saTrackArtists(res?.data?.trackUnion);
+}
+
+/**
+ * Resolves track/episode URIs to their sources, in input order, deduped. Failed URIs contribute nothing.
+ * @param {string[]} uris
+ * @returns {Promise<Source[]>}
+ */
+async function saResolveSources(uris) {
+  const lists = await Promise.all(uris.map(async (uri) => {
+    const cached = saSourceCache.get(uri);
+    if (cached) return cached;
+    try {
+      const sources = await saFetchSources(uri);
+      if (sources.length) saSourceCache.set(uri, sources);
+      return sources;
+    } catch (err) {
+      console.warn(`${SA_LOG} Couldn't look up ${uri}`, err);
+      return [];
+    }
+  }));
+  return saDedupeSources(lists.flat());
+}
+
+/**
+ * Sources for the now-playing item without a network request when possible.
+ * @param {Object|undefined} item Spicetify.Player.data.item
+ * @returns {Source[]}
+ */
+function saSourcesFromPlayerItem(item) {
+  if (item?.show?.uri) return [{ uri: item.show.uri, name: item.show.name || '', kind: 'show' }];
+  return saDedupeSources((item?.artists || [])
+    .filter((a) => a?.uri)
+    .map((a) => ({ uri: a.uri, name: a.name || '', kind: 'artist' })));
+}
 //#endregion
 
 //#region Mappings Store
@@ -136,6 +282,9 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     saParseData,
     saParseConfig,
+    saFlattenRootlist,
+    saTrackArtists,
+    saCreateLru,
   };
 } else {
   saMain();
