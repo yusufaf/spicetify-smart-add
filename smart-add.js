@@ -15,6 +15,8 @@ const SA_CONFIG_KEY = 'smart-add-config';
 const SA_DATA_BACKUP_KEY = 'smart-add-data-backup';
 const SA_DATA_VERSION = 1;
 const SA_MAX_GROUPS = 3;
+const SA_CAPTURE_WINDOW_MS = 2000;
+const SA_FIBER_DEPTH = 20;
 const SA_PLAYLIST_CACHE_MS = 30_000;
 const SA_SOURCE_CACHE_SIZE = 200;
 const SA_DEFAULT_CONFIG = { enabled: true, maxPerGroup: 5, showGroupHeaders: true };
@@ -27,6 +29,8 @@ let saPlaylistCache = null;
 let saPlaylistCacheAt = 0;
 let saPlaylistInflight = null;
 const saSourceCache = saCreateLru(SA_SOURCE_CACHE_SIZE);
+/** @type {Capture|null} */
+let saCapture = null;
 //#endregion
 
 //#region Storage
@@ -325,6 +329,76 @@ function buildSuggestionGroups(sources, mappings, savedInSet, maxPerGroup) {
 //#endregion
 
 //#region Trigger Capture
+/**
+ * @typedef {{uris: string[], at: number, sources: Promise<Source[]>, used: boolean}} Capture
+ */
+
+/**
+ * Whether a capture can drive suggestions for a modal opening now.
+ * @param {Capture|null} capture
+ * @param {number} now
+ * @param {number} [windowMs]
+ * @returns {boolean}
+ */
+function saIsFresh(capture, now, windowMs = SA_CAPTURE_WINDOW_MS) {
+  if (!capture || capture.used) return false;
+  const age = now - capture.at;
+  return age >= 0 && age <= windowMs;
+}
+
+/**
+ * Reads a tracklist row's track/episode URI from React's props. The row DOM carries no URI.
+ * @param {Element|null} row element with role=row
+ * @returns {string|null}
+ */
+function saRowUri(row) {
+  if (!row) return null;
+  const key = Object.keys(row).find((k) => k.startsWith('__reactFiber$'));
+  let fiber = key ? row[key] : null;
+  for (let depth = 0; fiber && depth < SA_FIBER_DEPTH; depth += 1, fiber = fiber.return) {
+    const uri = fiber.memoizedProps?.uri;
+    if (typeof uri === 'string' && /^spotify:(track|episode):/.test(uri)) return uri;
+  }
+  return null;
+}
+
+/**
+ * Records what a click on a row or now-playing save/add button refers to.
+ * The same button saves to Liked Songs or opens the Add to playlist modal, so every click is
+ * recorded and the modal injector decides whether a capture is fresh enough to use.
+ * @param {MouseEvent} event
+ */
+function saOnClickCapture(event) {
+  try {
+    const target = /** @type {Element} */ (event.target);
+    if (target.closest?.('#context-menu')) {
+      saCapture = null;
+      return;
+    }
+    const button = target.closest?.('button[aria-checked]');
+    if (!button || button.closest('form, [role=menu]')) return;
+    const row = button.closest('[role=row]');
+    if (row) {
+      const uri = saRowUri(row);
+      if (uri) saCapture = { uris: [uri], at: Date.now(), sources: saResolveSources([uri]), used: false };
+      return;
+    }
+    if (button.closest('[data-testid=now-playing-widget], #Desktop_PanelContainer_Id')) {
+      const item = Spicetify.Player.data?.item;
+      if (!item?.uri) return;
+      const direct = saSourcesFromPlayerItem(item);
+      const sources = direct.length ? Promise.resolve(direct) : saResolveSources([item.uri]);
+      saCapture = { uris: [item.uri], at: Date.now(), sources, used: false };
+    }
+  } catch (err) {
+    console.error(`${SA_LOG} Click capture failed`, err);
+  }
+}
+
+/** Installs the capture-phase click listener. */
+function saInstallCapture() {
+  document.addEventListener('click', saOnClickCapture, true);
+}
 //#endregion
 
 //#region Modal Injector
@@ -359,6 +433,7 @@ async function saMain() {
   }
   console.log(`${SA_LOG} Starting...`);
   saLoad();
+  saInstallCapture();
   console.log(`${SA_LOG} Initialized`);
 }
 
@@ -371,6 +446,8 @@ if (typeof module !== 'undefined' && module.exports) {
     saCreateLru,
     saPruneMappings,
     buildSuggestionGroups,
+    saIsFresh,
+    saRowUri,
   };
 } else {
   saMain();
