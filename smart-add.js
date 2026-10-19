@@ -406,7 +406,8 @@ function saOnClickCapture(event) {
     if (!button || button.closest('form, [role=menu]')) return;
     const row = button.closest('[role=row]');
     if (row) {
-      const uri = saRowUri(row);
+      // Episode rows keep the URI closer to the button than to the row element.
+      const uri = saRowUri(button) || saRowUri(row);
       if (uri) saCapture = { uris: [uri], at: Date.now(), sources: saResolveSources([uri]), used: false };
       saGetPlaylists();
       return;
@@ -746,9 +747,197 @@ function saWireForm(form, state) {
 //#endregion
 
 //#region Mapping Editor
+/**
+ * @param {Array<{uri: string, name: string, image: string}>} playlists
+ * @param {string} query
+ * @returns {Array<{uri: string, name: string, image: string}>}
+ */
+function saFilterPlaylists(playlists, query) {
+  const q = query.trim().toLowerCase();
+  return q ? playlists.filter((p) => p.name.toLowerCase().includes(q)) : playlists;
+}
+
+/**
+ * The playlists to store after editing: still-checked ones keep their order, new ones follow in list order.
+ * @param {string[]} previous
+ * @param {Set<string>} checked
+ * @param {string[]} listOrder
+ * @returns {string[]}
+ */
+function saNextPlaylists(previous, checked, listOrder) {
+  const kept = previous.filter((uri) => checked.has(uri));
+  const added = listOrder.filter((uri) => checked.has(uri) && !kept.includes(uri));
+  return [...kept, ...added];
+}
+
+/**
+ * Opens the editor for one source's playlists.
+ * @param {Source} source
+ */
+async function saOpenMappingEditor(source) {
+  try {
+    const playlists = await saGetPlaylists({ force: true });
+    const previous = saGetMapping(source.uri)?.playlists || [];
+    const checked = new Set(previous);
+    const ordered = [
+      ...previous.map((uri) => playlists.find((p) => p.uri === uri)).filter(Boolean),
+      ...playlists.filter((p) => !checked.has(p.uri)),
+    ];
+
+    const root = document.createElement('div');
+    root.className = 'sa-editor';
+    const hint = document.createElement('p');
+    hint.className = 'sa-editor-hint';
+    hint.textContent = source.kind === 'show'
+      ? `These playlists show up first when you add an episode of ${source.name}.`
+      : `These playlists show up first when you add a song by ${source.name}.`;
+    const filter = document.createElement('input');
+    filter.type = 'search';
+    filter.className = 'sa-input';
+    filter.placeholder = 'Filter playlists';
+    const list = document.createElement('div');
+    list.className = 'sa-editor-list';
+    const empty = document.createElement('p');
+    empty.className = 'sa-editor-hint';
+    empty.textContent = playlists.length ? 'No playlists match.' : "You don't have any playlists you can add to yet.";
+
+    const render = () => {
+      list.replaceChildren();
+      const shown = saFilterPlaylists(ordered, filter.value);
+      for (const playlist of shown) {
+        const label = document.createElement('label');
+        label.className = 'sa-editor-row';
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = checked.has(playlist.uri);
+        box.addEventListener('change', () => {
+          if (box.checked) checked.add(playlist.uri);
+          else checked.delete(playlist.uri);
+        });
+        const cover = document.createElement(playlist.image ? 'img' : 'span');
+        cover.className = 'sa-row-cover';
+        if (playlist.image) {
+          cover.src = playlist.image;
+          cover.alt = '';
+        }
+        const name = document.createElement('span');
+        name.className = 'sa-row-name';
+        name.textContent = playlist.name;
+        label.append(box, cover, name);
+        list.append(label);
+      }
+      if (!shown.length) list.append(empty);
+    };
+    filter.addEventListener('input', render);
+    render();
+
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'sa-button sa-button--primary';
+    save.textContent = 'Save';
+    save.addEventListener('click', () => {
+      saSetMapping(source, saNextPlaylists(previous, checked, ordered.map((p) => p.uri)));
+      Spicetify.PopupModal.hide();
+      Spicetify.showNotification(checked.size ? `Saved playlists for ${source.name}` : `Removed playlists for ${source.name}`);
+    });
+    const footer = document.createElement('div');
+    footer.className = 'sa-editor-footer';
+    footer.append(save);
+
+    root.append(hint, filter, list, footer);
+    Spicetify.PopupModal.display({ title: `Playlists for ${source.name}`, content: root, isLarge: true });
+    filter.focus();
+  } catch (err) {
+    console.error(`${SA_LOG} Couldn't open the mapping editor`, err);
+    Spicetify.showNotification("Couldn't open Smart Add", true);
+  }
+}
+
+/**
+ * Asks which credited artist to map when a track has several, then opens the editor.
+ * @param {Source[]} sources
+ */
+function saPickSource(sources) {
+  const root = document.createElement('div');
+  root.className = 'sa-editor';
+  const hint = document.createElement('p');
+  hint.className = 'sa-editor-hint';
+  hint.textContent = 'This song has more than one artist. Which one do you want to map?';
+  root.append(hint);
+  for (const source of sources) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'sa-button sa-pick';
+    button.textContent = source.name;
+    button.addEventListener('click', () => saOpenMappingEditor(source));
+    root.append(button);
+  }
+  Spicetify.PopupModal.display({ title: 'Choose an artist', content: root });
+}
 //#endregion
 
 //#region Context Menus
+/**
+ * Looks up the display name for an artist or show URI.
+ * @param {string} uri
+ * @returns {Promise<Source>}
+ */
+async function saSourceFromUri(uri) {
+  if (Spicetify.URI.isShow(uri)) {
+    const meta = await Spicetify.Platform.ShowAPI.getMetadata(uri);
+    return { uri, name: meta?.name || 'this show', kind: 'show' };
+  }
+  const res = await Spicetify.GraphQL.Request(Spicetify.GraphQL.Definitions.queryArtistOverview, {
+    uri,
+    locale: Spicetify.Locale?.getLocale?.() || 'en',
+    includePrerelease: false,
+  });
+  return { uri, name: res?.data?.artistUnion?.profile?.name || 'this artist', kind: 'artist' };
+}
+
+/**
+ * Opens the editor for a track's or episode's source, asking first if a track has several artists.
+ * @param {string} uri
+ */
+async function saMapFromItem(uri) {
+  const sources = await saResolveSources([uri]);
+  if (!sources.length) {
+    Spicetify.showNotification("Couldn't find who made this", true);
+    return;
+  }
+  if (sources.length === 1) saOpenMappingEditor(sources[0]);
+  else saPickSource(sources);
+}
+
+/** Registers the right-click entries for artists, shows, tracks and episodes. */
+function saRegisterContextMenus() {
+  const single = (uris, test) => uris.length === 1 && test(uris[0]);
+  new Spicetify.ContextMenu.Item(
+    'Smart Add playlists…',
+    async ([uri]) => {
+      try {
+        saOpenMappingEditor(await saSourceFromUri(uri));
+      } catch (err) {
+        console.error(`${SA_LOG} Couldn't look up ${uri}`, err);
+        Spicetify.showNotification("Couldn't open Smart Add", true);
+      }
+    },
+    (uris) => single(uris, (u) => Spicetify.URI.isArtist(u) || Spicetify.URI.isShow(u)),
+    'playlist',
+  ).register();
+  new Spicetify.ContextMenu.Item(
+    'Map artist to playlists…',
+    ([uri]) => saMapFromItem(uri),
+    (uris) => single(uris, (u) => Spicetify.URI.isTrack(u)),
+    'playlist',
+  ).register();
+  new Spicetify.ContextMenu.Item(
+    'Map show to playlists…',
+    ([uri]) => saMapFromItem(uri),
+    (uris) => single(uris, (u) => Spicetify.URI.isEpisode(u)),
+    'playlist',
+  ).register();
+}
 //#endregion
 
 //#region Settings
@@ -804,6 +993,57 @@ function saInjectStyles() {
     }
     .sa-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .sa-row-mark { color: var(--spice-button); font-weight: 700; }
+
+    .sa-editor { display: flex; flex-direction: column; gap: 12px; }
+    .sa-editor-hint { margin: 0; color: var(--spice-subtext); font-size: 0.875rem; }
+    .sa-input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid rgba(var(--spice-rgb-subtext), 0.4);
+      border-radius: 4px;
+      background: rgba(var(--spice-rgb-text), 0.07);
+      color: var(--spice-text);
+      font: inherit;
+    }
+    .sa-editor-list {
+      display: flex;
+      flex-direction: column;
+      max-height: min(45vh, 440px);
+      overflow-y: auto;
+    }
+    .sa-editor-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      color: var(--spice-text);
+      cursor: pointer;
+    }
+    .sa-editor-row:hover { background: rgba(var(--spice-rgb-text), 0.1); }
+    .sa-editor-row input { accent-color: var(--spice-button); width: 16px; height: 16px; }
+    .sa-editor-footer { display: flex; justify-content: flex-end; gap: 8px; }
+    .sa-button {
+      padding: 8px 20px;
+      border: 1px solid rgba(var(--spice-rgb-subtext), 0.5);
+      border-radius: 999px;
+      background: transparent;
+      color: var(--spice-text);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .sa-button:hover { border-color: var(--spice-text); }
+    .sa-button--primary { border-color: var(--spice-button); background: var(--spice-button); color: var(--spice-main); }
+    .sa-button--primary:hover { background: var(--spice-button-active); border-color: var(--spice-button-active); }
+    .sa-pick { text-align: left; border-radius: 4px; }
+
+    /* Spicetify's isLarge PopupModal fills the viewport whatever the content; cap only our modals. */
+    .main-embedWidgetGenerator-container:has(.sa-editor) {
+      height: auto !important;
+      max-height: min(80vh, 720px) !important;
+    }
+    .main-trackCreditsModal-mainSection:has(.sa-editor) { overflow-y: auto !important; }
   `;
   document.head.append(style);
 }
@@ -830,6 +1070,7 @@ async function saMain() {
   saInstallCapture();
   saInstallInjector();
   saWatchRootlist();
+  saRegisterContextMenus();
   saPruneStored();
   console.log(`${SA_LOG} Initialized`);
 }
@@ -847,6 +1088,8 @@ if (typeof module !== 'undefined' && module.exports) {
     saRowUri,
     saPlaylistUriFromLabelledBy,
     saNativeRowUri,
+    saFilterPlaylists,
+    saNextPlaylists,
   };
 } else {
   saMain();
