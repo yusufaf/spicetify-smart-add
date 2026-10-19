@@ -941,6 +941,208 @@ function saRegisterContextMenus() {
 //#endregion
 
 //#region Settings
+/**
+ * Serializes data and config as an export file.
+ * @param {{version: number, mappings: Object}} data
+ * @param {Object} config
+ * @returns {string}
+ */
+function saExportText(data, config) {
+  return JSON.stringify({ app: 'smart-add', data, config }, null, 2);
+}
+
+/**
+ * Parses an export file. Throws if it isn't a valid Smart Add export.
+ * @param {string} text
+ * @returns {{data: {version: number, mappings: Object}, config: Object}}
+ */
+function saParseImport(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = null;
+  }
+  if (parsed?.app !== 'smart-add') throw new Error('Not a Smart Add export');
+  const { data, corrupt } = saParseData(JSON.stringify(parsed.data ?? null));
+  if (corrupt || !parsed.data) throw new Error('Not a Smart Add export');
+  return { data, config: saParseConfig(JSON.stringify(parsed.config ?? null)) };
+}
+
+/** Adds "Smart Add" to the profile menu. */
+function saRegisterSettings() {
+  if (!Spicetify.Menu?.Item) return;
+  new Spicetify.Menu.Item('Smart Add', false, saOpenSettings).register();
+}
+
+/**
+ * Builds a labelled settings control row.
+ * @param {string} text
+ * @param {HTMLElement} control
+ * @returns {HTMLLabelElement}
+ */
+function saSettingRow(text, control) {
+  const label = document.createElement('label');
+  label.className = 'sa-setting';
+  const span = document.createElement('span');
+  span.textContent = text;
+  label.append(span, control);
+  return label;
+}
+
+/** Opens the settings modal: options, the mappings table, and export/import. */
+function saOpenSettings() {
+  const root = document.createElement('div');
+  root.className = 'sa-editor sa-settings';
+
+  const toggle = (key) => {
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = Boolean(saConfig[key]);
+    box.addEventListener('change', () => {
+      saConfig = { ...saConfig, [key]: box.checked };
+      saSaveConfig();
+    });
+    return box;
+  };
+  const max = document.createElement('input');
+  max.type = 'number';
+  max.min = '1';
+  max.max = '10';
+  max.className = 'sa-input sa-number';
+  max.value = String(saConfig.maxPerGroup);
+  max.addEventListener('change', () => {
+    const n = Math.min(10, Math.max(1, parseInt(max.value, 10) || SA_DEFAULT_CONFIG.maxPerGroup));
+    max.value = String(n);
+    saConfig = { ...saConfig, maxPerGroup: n };
+    saSaveConfig();
+  });
+
+  const heading = (text) => {
+    const h = document.createElement('h3');
+    h.className = 'sa-settings-heading';
+    h.textContent = text;
+    return h;
+  };
+
+  const table = document.createElement('div');
+  table.className = 'sa-editor-list';
+  const renderTable = () => {
+    table.replaceChildren();
+    const entries = Object.entries(saData.mappings).sort(([, a], [, b]) => a.name.localeCompare(b.name));
+    if (!entries.length) {
+      const empty = document.createElement('p');
+      empty.className = 'sa-editor-hint';
+      empty.textContent = 'No mappings yet. Right-click an artist, song, show or episode and choose a Smart Add option.';
+      table.append(empty);
+    }
+    for (const [uri, mapping] of entries) {
+      const row = document.createElement('div');
+      row.className = 'sa-mapping';
+      const name = document.createElement('span');
+      name.className = 'sa-row-name';
+      name.textContent = mapping.name;
+      const meta = document.createElement('span');
+      meta.className = 'sa-mapping-meta';
+      const count = mapping.playlists.length;
+      meta.textContent = `${mapping.kind === 'show' ? 'Show' : 'Artist'} · ${count} playlist${count === 1 ? '' : 's'}`;
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'sa-button';
+      edit.textContent = 'Edit';
+      edit.addEventListener('click', () => saOpenMappingEditor({ uri, name: mapping.name, kind: mapping.kind }));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'sa-button';
+      remove.textContent = 'Delete';
+      remove.addEventListener('click', () => {
+        saRemoveMapping(uri);
+        renderTable();
+      });
+      row.append(name, meta, edit, remove);
+      table.append(row);
+    }
+  };
+  renderTable();
+
+  const exportButton = document.createElement('button');
+  exportButton.type = 'button';
+  exportButton.className = 'sa-button';
+  exportButton.textContent = 'Export';
+  exportButton.addEventListener('click', () => {
+    const url = URL.createObjectURL(new Blob([saExportText(saData, saConfig)], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `smart-add-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    Spicetify.showNotification('Exported Smart Add mappings');
+  });
+
+  const file = document.createElement('input');
+  file.type = 'file';
+  file.accept = 'application/json,.json';
+  file.hidden = true;
+  const importButton = document.createElement('button');
+  importButton.type = 'button';
+  importButton.className = 'sa-button';
+  importButton.textContent = 'Import';
+  importButton.addEventListener('click', () => file.click());
+  const confirmRow = document.createElement('div');
+  confirmRow.className = 'sa-confirm';
+  confirmRow.hidden = true;
+  file.addEventListener('change', async () => {
+    const picked = file.files?.[0];
+    file.value = '';
+    if (!picked) return;
+    try {
+      const imported = saParseImport(await picked.text());
+      const n = Object.keys(imported.data.mappings).length;
+      const text = document.createElement('span');
+      text.textContent = `Replace your ${Object.keys(saData.mappings).length} mapping(s) with ${n} from ${picked.name}?`;
+      const replace = document.createElement('button');
+      replace.type = 'button';
+      replace.className = 'sa-button sa-button--primary';
+      replace.textContent = 'Replace';
+      replace.addEventListener('click', () => {
+        saData = imported.data;
+        saConfig = imported.config;
+        saSaveData();
+        saSaveConfig();
+        Spicetify.PopupModal.hide();
+        Spicetify.showNotification(`Imported ${n} mapping(s)`);
+      });
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'sa-button';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', () => {
+        confirmRow.hidden = true;
+      });
+      confirmRow.replaceChildren(text, replace, cancel);
+      confirmRow.hidden = false;
+    } catch (err) {
+      Spicetify.showNotification(`Import failed: ${err.message}`, true);
+    }
+  });
+  const actions = document.createElement('div');
+  actions.className = 'sa-editor-footer';
+  actions.append(exportButton, importButton, file);
+
+  root.append(
+    heading('Options'),
+    saSettingRow('Show suggestions in Add to playlist', toggle('enabled')),
+    saSettingRow('Show a header per artist or show', toggle('showGroupHeaders')),
+    saSettingRow('Suggestions per artist or show', max),
+    heading('Mappings'),
+    table,
+    actions,
+    confirmRow,
+  );
+  Spicetify.PopupModal.display({ title: 'Smart Add', content: root, isLarge: true });
+}
 //#endregion
 
 //#region Styles
@@ -1037,6 +1239,29 @@ function saInjectStyles() {
     .sa-button--primary { border-color: var(--spice-button); background: var(--spice-button); color: var(--spice-main); }
     .sa-button--primary:hover { background: var(--spice-button-active); border-color: var(--spice-button-active); }
     .sa-pick { text-align: left; border-radius: 4px; }
+    .sa-settings-heading { margin: 8px 0 0; font-size: 1rem; color: var(--spice-text); }
+    .sa-setting {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      color: var(--spice-text);
+    }
+    .sa-setting input[type=checkbox] { accent-color: var(--spice-button); width: 16px; height: 16px; }
+    .sa-number { width: 72px; }
+    .sa-mapping {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      color: var(--spice-text);
+    }
+    .sa-mapping:hover { background: rgba(var(--spice-rgb-text), 0.1); }
+    .sa-mapping-meta { color: var(--spice-subtext); font-size: 0.8125rem; white-space: nowrap; }
+    .sa-mapping .sa-button { padding: 4px 12px; font-size: 0.8125rem; }
+    .sa-confirm { display: flex; align-items: center; gap: 8px; color: var(--spice-text); }
+    .sa-confirm[hidden] { display: none; }
 
     /* Spicetify's isLarge PopupModal fills the viewport whatever the content; cap only our modals. */
     .main-embedWidgetGenerator-container:has(.sa-editor) {
@@ -1071,6 +1296,7 @@ async function saMain() {
   saInstallInjector();
   saWatchRootlist();
   saRegisterContextMenus();
+  saRegisterSettings();
   saPruneStored();
   console.log(`${SA_LOG} Initialized`);
 }
@@ -1090,6 +1316,8 @@ if (typeof module !== 'undefined' && module.exports) {
     saNativeRowUri,
     saFilterPlaylists,
     saNextPlaylists,
+    saExportText,
+    saParseImport,
   };
 } else {
   saMain();
