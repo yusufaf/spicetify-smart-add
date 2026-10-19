@@ -11,9 +11,10 @@ The v1 design, decisions, and spike findings are in `docs/superpowers/specs/2026
 ## Commands
 
 ```bash
-pnpm test        # node --check smart-add.js — syntax gate, the only automated test
+pnpm test        # node --check smart-add.js, then node --test "test/*.test.js"
 ```
 
+- Pure logic (parsing, grouping, pruning, freshness, URI extraction) is exported through the `module.exports` guard at the end of `smart-add.js` and unit-tested in `test/`. In Spotify the guard calls `saMain()` instead. Add new pure functions to that export list and test them there.
 - Package manager is **pnpm** (pinned via `packageManager`).
 - Husky: `pre-commit` runs `pnpm test`; `commit-msg` runs commitlint (Conventional Commits — release-please derives versions from them).
 
@@ -33,7 +34,10 @@ Key invariants:
 - **Anchor on structure, not text or hashed classes.** The modal is a `form` containing `input[role=searchbox]` and `ul[role=menu]`. The older right-click submenu in `#context-menu` also has a searchbox but is not a `form` and is out of scope for v1.
 - **Persistence is `Spicetify.LocalStorage` only**, keys `smart-add-data` and `smart-add-config`. Mappings are keyed by artist/show URI; names are display caches.
 - **Re-entrant.** The modal form is recreated on every open and React re-renders it often. Dedupe on the form node and re-inject if our node is removed.
-- **Wrong suggestions are worse than none.** Inject only when the trigger capture is fresh and sources resolved in time.
+- **Wrong suggestions are worse than none.** Inject only when the trigger capture is fresh (2 s, used once) and sources, playlists and native rows are ready within 300 ms.
+- **The "+" is the save button.** Capture keys on `button[aria-checked]` in a `[role=row]`, the now-playing bar or `#Desktop_PanelContainer_Id`. Track/episode URIs come from React props (`saRowUri`), since rows carry none in the DOM.
+- **Native modal rows** are `button[role=menuitemcheckbox]`; their playlist URI is on a child's `aria-labelledby="listrow-title-<uri>"` (`saNativeRowUri`). Our rows mirror the twin's `aria-checked`.
+- **Never prune from a cached rootlist.** The render path only hides unknown playlists; `saPruneStored` deletes after a fresh `RootlistAPI` read.
 
 ## Versioning
 
