@@ -7,7 +7,7 @@ const ROOTLIST = {
   type: "folder",
   name: "",
   items: [
-    { type: "playlist", uri: "spotify:playlist:rap", name: "Rap", canAdd: true, isOwnedBySelf: true },
+    { type: "playlist", uri: "spotify:playlist:rap", name: "Rap", canAdd: true, isOwnedBySelf: true, images: [{ url: "spotify:image:ab67616d00001e02abe203531eac29d17260966f", label: "standard" }] },
     { type: "playlist", uri: "spotify:playlist:followed", name: "Best Ambient Tracks Ever", canAdd: false, isOwnedBySelf: false },
     {
       type: "folder",
@@ -28,9 +28,9 @@ const TRACK_UNION = {
 
 test("flattens folders and keeps only playlists the user can add to, in rootlist order", () => {
   assert.deepEqual(saFlattenRootlist(ROOTLIST), [
-    { uri: "spotify:playlist:rap", name: "Rap" },
-    { uri: "spotify:playlist:rnb", name: "R&B" },
-    { uri: "spotify:playlist:jazz", name: "Jazz" },
+    { uri: "spotify:playlist:rap", name: "Rap", image: "spotify:image:ab67616d00001e02abe203531eac29d17260966f" },
+    { uri: "spotify:playlist:rnb", name: "R&B", image: "" },
+    { uri: "spotify:playlist:jazz", name: "Jazz", image: "" },
   ]);
   assert.deepEqual(saFlattenRootlist(null), []);
 });
