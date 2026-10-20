@@ -84,7 +84,14 @@ function saParseData(raw) {
 function saParseConfig(raw) {
   try {
     const parsed = raw ? JSON.parse(raw) : null;
-    if (parsed && typeof parsed === 'object') return { ...SA_DEFAULT_CONFIG, ...parsed };
+    const config = { ...SA_DEFAULT_CONFIG };
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return config;
+    if (typeof parsed.enabled === 'boolean') config.enabled = parsed.enabled;
+    if (typeof parsed.showGroupHeaders === 'boolean') config.showGroupHeaders = parsed.showGroupHeaders;
+    if (Number.isInteger(parsed.maxPerGroup) && parsed.maxPerGroup >= 1 && parsed.maxPerGroup <= 10) {
+      config.maxPerGroup = parsed.maxPerGroup;
+    }
+    return config;
   } catch {}
   return { ...SA_DEFAULT_CONFIG };
 }
@@ -624,7 +631,7 @@ async function saInjectInto(form) {
     );
     if (!ready || !form.isConnected) return;
     const [sources, playlists] = ready;
-    if (!sources.length) return;
+    if (!sources.length || !playlists.length) return;
 
     // Hide playlists we can't find, but only delete them from storage after a fresh fetch confirms it.
     const visible = saPruneMappings(saData.mappings, new Set(playlists.map((p) => p.uri)));
@@ -762,7 +769,7 @@ async function saOnRowClick(form, button, playlistUri, name, state) {
 function saBlockNativeRow(state, playlistUri) {
   state.blocked.add(playlistUri);
   state.blockStyle.textContent = [...state.blocked]
-    .map((uri) => `form button[role=menuitemcheckbox]:has([aria-labelledby="listrow-title-${uri}"])`)
+    .map((uri) => `form button[role=menuitemcheckbox]:has([aria-labelledby~="listrow-title-${uri}"])`)
     .join(',\n') + ' { opacity: 0.5; pointer-events: none; }';
 }
 
@@ -1333,6 +1340,10 @@ function saInjectStyles() {
 //#endregion
 
 //#region Bootstrap
+/**
+ * Whether every Spicetify API the extension uses has loaded.
+ * @returns {boolean}
+ */
 function saReady() {
   return Boolean(
     Spicetify?.LocalStorage &&
@@ -1343,6 +1354,7 @@ function saReady() {
   );
 }
 
+/** Waits for Spicetify, then loads state and installs every hook. */
 async function saMain() {
   while (!saReady()) {
     await new Promise((resolve) => setTimeout(resolve, 100));

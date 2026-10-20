@@ -35,6 +35,16 @@ test("merges stored config over defaults and ignores garbage", () => {
   assert.deepEqual(saParseConfig(null), { enabled: true, maxPerGroup: 5, showGroupHeaders: true });
 });
 
+test("replaces config values of the wrong type or out of range with defaults", () => {
+  const defaults = { enabled: true, maxPerGroup: 5, showGroupHeaders: true };
+  assert.deepEqual(saParseConfig('{"maxPerGroup":0}'), defaults);
+  assert.deepEqual(saParseConfig('{"maxPerGroup":11}'), defaults);
+  assert.deepEqual(saParseConfig('{"maxPerGroup":2.5}'), defaults);
+  assert.deepEqual(saParseConfig('{"maxPerGroup":"x","enabled":"false","showGroupHeaders":1}'), defaults);
+  assert.deepEqual(saParseConfig('{"enabled":false,"extra":1}'), { ...defaults, enabled: false });
+  assert.deepEqual(saParseConfig("[1,2]"), defaults);
+});
+
 test("drops mapping entries with the wrong shape and counts them", () => {
   const good = { kind: "show", name: "Lex Fridman Podcast", playlists: ["spotify:playlist:a"], updatedAt: 1 };
   const raw = JSON.stringify({
