@@ -17,7 +17,7 @@ No build step required - edit the JavaScript file directly.
 
 ```bash
 pnpm install
-pnpm test        # node --check smart-add.js
+pnpm test        # node --check smart-add.js, then node --test on test/*.test.js
 ```
 
 **Debug output:**

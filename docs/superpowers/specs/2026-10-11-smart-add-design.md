@@ -124,6 +124,13 @@ The interesting choice is which group wins a duplicate, and whether the cap coun
   - Track → artists for a bare URI (via `getTrack` or `Player.data.item.artists`).
   - Scroll the list and close/reopen with our node mounted (re-verify in the real build).
 
+## Implementation probes (2026-10-18, Spotify 1.2.x, Spicetify 2.45.3)
+- **Track → artists:** `getTrack` returns `trackUnion.firstArtist.items[]` and `trackUnion.otherArtists.items[]`, each `{ uri, profile.name }`.
+- **Rootlist:** playlist items carry `type`, `uri`, `name`, `canAdd`, `isOwnedBySelf`; folders carry `items`. On the test account `canAdd` matched `isOwnedBySelf` (63 of 153).
+- **Episode → show:** `queryNpvEpisode` works for a real episode (`spotify:episode:0aM69uGff54ewQJzQxZVLf` → Lex Fridman Podcast).
+- **The "+" button is the save button.** Rows, the now-playing bar and the right panel (`#Desktop_PanelContainer_Id`) share one `button[aria-checked]`: unsaved it reads "Add to Liked Songs" and saves; saved it opens the Add to playlist modal. Its label is the only text that changes, so capture keys on `button[aria-checked]` (no text) and records every click; freshness and one-shot use stop a Liked Songs click from driving a later modal.
+- **Row URI:** rows have no track link or URI attribute. The URI is in React props: walk `__reactFiber$…` up via `.return` to the first `memoizedProps.uri` that is a track/episode (depth ~2). Reading props only, no patching.
+
 ## v1.1 (separate spec later)
 - Inference index: artist → {playlist: count}, built in the background over owned playlists and refreshed incrementally.
 - Per-playlist exclusions.
