@@ -1354,6 +1354,26 @@ function saReady() {
   );
 }
 
+/**
+ * Exposes the extension's state to spicetify-compat's `check`
+ * (https://github.com/yusufaf/spicetify-compat#health-hook-contract).
+ * Suggestions only exist inside an open Add to playlist modal, so both anchors
+ * are 0 on every route otherwise.
+ */
+function saRegisterHealthHook() {
+  (window.__spicetifyHealth ??= {})['smart-add'] = () => {
+    const forms = [...document.querySelectorAll('form')];
+    return {
+      ready: true,
+      anchors: {
+        sections: document.querySelectorAll('#sa-suggested').length,
+        rows: document.querySelectorAll('#sa-suggested .sa-row').length,
+      },
+      errors: forms.some((form) => saFormState.get(form)?.dead) ? ["Couldn't re-insert suggestions"] : [],
+    };
+  };
+}
+
 /** Waits for Spicetify, then loads state and installs every hook. */
 async function saMain() {
   while (!saReady()) {
@@ -1368,6 +1388,7 @@ async function saMain() {
   saRegisterContextMenus();
   saRegisterSettings();
   saPruneStored();
+  saRegisterHealthHook();
   console.log(`${SA_LOG} Initialized`);
 }
 
