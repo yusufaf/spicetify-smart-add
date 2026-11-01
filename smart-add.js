@@ -1,7 +1,7 @@
 // NAME: Smart Add
 // AUTHOR: yusufaf
 // x-release-please-start-version
-// VERSION: 0.1.0
+// VERSION: 0.2.0
 // x-release-please-end-version
 // DESCRIPTION: Suggests your mapped playlists first in Spotify's Add to playlist menu
 
