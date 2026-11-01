@@ -10,8 +10,11 @@
 
 // Marketplace and the Extensions folder can both load this file; only the first copy runs.
 // Node (unit tests) has no window, and needs the exports at the bottom.
-if (typeof window !== "undefined") {
-  if (window.__smartAddActive) return;
+if (typeof window !== 'undefined') {
+  if (window.__smartAddActive) {
+    console.info('[Smart Add] Another copy is already running; skipping this one.');
+    return;
+  }
   window.__smartAddActive = true;
 }
 
